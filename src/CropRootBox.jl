@@ -443,5 +443,9 @@ using FileIO
 writestl(name::AbstractString, s::System) = writestl(name, mesh(s))
 writestl(name::AbstractString, m::Mesh) = save(File{format"STL_BINARY"}(name), m)
 writestl(name::AbstractString, ::Nothing) = @warn "no mesh available for writing $name"
+writeply(name::AbstractString, s::System) = writeply(name, mesh(s))
+writeply(name::AbstractString, m::Mesh) = save(File{format"PLY_BINARY"}(name), m)
+writeply(name::AbstractString, ::Nothing) = @warn "no mesh available for writing $name"
+
 
 end
