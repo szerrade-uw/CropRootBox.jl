@@ -1,6 +1,10 @@
+module CropRootBox
 using Cropbox
-using GLMakie
-using Test
+#using GLMakie
+#using Test
+using FileIO
+using PlyIO
+
 
 #### CropRootBox Start
 using Cropbox
@@ -8,10 +12,10 @@ using Distributions
 import Makie
 import Meshing
 using GeometryBasics: GeometryBasics, Mesh, Point3f, coordinates, faces, FaceView
-using CoordinateTransformations: IdentityTransformation, LinearMap, Transformation, Translation, recenter
-using Rotations: RotZX, RotXY, RotX, RotY
+using CoordinateTransformations: IdentityTransformation, LinearMap, Transformation, Translation, recenter, AbstractAffineMap
+using Rotations: RotZX, RotXY, RotX, RotY, RotZ
 using Colors: RGBA
-using StaticArrays
+#using StaticArrays
 import UUIDs
 
 @system Rendering
@@ -120,7 +124,14 @@ mesh(s::Rhizobox2) = begin
     mv = GeometryBasics.decompose(GeometryBasics.Point, m) # Decompose the mesh into coordinates
     mf = GeometryBasics.decompose(GeometryBasics.TriangleFace{Int}, m) # Decompose mesh into faces
     M = s.RT'
-    GeometryBasics.normal_mesh(M.(mv), mf) # Apply rotation to coordinates and connect back together using faces
+
+
+    m = GeometryBasics.normal_mesh(M.(mv), mf) # Apply rotation to coordinates and connect back together using faces
+    n = length(GeometryBasics.coordinates(m))
+    #print(n)
+    #if color
+    m = GeometryBasics.mesh(m,vertex_attributes=(color=fill(RGBA(1,1,1,1), n)))
+    #end
 end
 
 @system SoilCore(Container) <: Container begin
@@ -156,7 +167,7 @@ end
 
     dist(nounit(d), nounit(t); p::Point3f): distance => begin
         x, y, z = p
-        a = -dc
+        a = -d
         b = a - t
         if a <= z # above
             z - a
@@ -178,6 +189,7 @@ end
     to(RT0; α, β): tropism_objective => begin
         R = RotZX(β, α) |> LinearMap
         (RT0 ∘ R).linear[9] |> abs
+        #0.01 * s
     end ~ call
 end
 
@@ -185,25 +197,38 @@ end
     RT0: parent_transformation ~ hold
     to(RT0; α, β): tropism_objective => begin
         R = RotZX(β, α) |> LinearMap
-        #-(RT0 ∘ R).linear[9]
+        #-10 * abs((RT0 ∘ R).linear[9])
         p = (RT0 ∘ R)(Point3f(0, 0, -1))
-        p[3]
+        0.5 * (p[3])
     end ~ call
 end
 
 @system Exotropism(Tropism) <: Tropism begin
-    to(; α, β): tropism_objective => begin
+    RT0: parent_transformation ~ hold
+    to(RT0; α, β): tropism_objective => begin
         #HACK: not exact implementation, needs to keep initial heading
-        abs(Cropbox.deunitfy(α))
+        #abs(Cropbox.deunitfy(α))
+        R = RotZX(β, α) |> LinearMap
+        p = (RT0 ∘ R).linear[9] |> abs
+        0.00001 * acos(-p)
     end ~ call
 end
 
 @system RootSegment{ # TODO: Add diameter
     Segment => RootSegment,
     Branch => RootSegment,
+    Rhizome => RootSegment,
+
 }(Tropism, Rendering) begin
     box ~ <:Container(override)
 
+    ## How to relate back to the shoot? Apply transformation for different starting positions?
+    firstB: first_basal_emergence => 6 ~ preserve(u"d", extern, parameter, min = 0)
+    delayB: time_between_basal => 2 ~ preserve(u"d", extern, parameter, min = 0)
+    firstS: first_crown_emergence => 10 ~ preserve(u"d", extern, parameter, min = 0)
+    delayS: time_between_crown => 2 ~ preserve(u"d", extern, parameter, min = 0)
+
+    ## Need to add new root order?
     ro: root_order => 1 ~ preserve::int(extern)
     zi: zone_index => 0 ~ preserve::int(extern)
 
@@ -240,7 +265,7 @@ end
     σ: standard_deviation_of_angle => 30 ~ preserve(u"°", parameter)
     σ_Δx(σ, nounit(Δx)): normalized_standard_deviation_of_angle => sqrt(Δx)*σ ~ preserve(u"°")
 
-    θ: insertion_angle => 30 ~ preserve(u"°", parameter)
+    θ: insertion_angle => 90 ~ preserve(u"°", parameter)
     pα(zi, nounit(θ), nounit(σ_Δx);): pick_angular_angle => begin
         θ = zi == 0 ? θ : zero(θ)
         rand(Normal(θ, σ_Δx))
@@ -248,7 +273,7 @@ end
     pβ(;): pick_radial_angle => rand(Uniform(0, 360)) ~ call(u"°")
     αN: angular_angle_trials => 20 ~ preserve::int(parameter)
     βN: radial_angle_trials => 5 ~ preserve::int(parameter)
-    A(pα, pβ, to, N, dist=box.dist, np, αN, βN): angles => begin
+    A(pα, pβ, to, N, dist=box.dist, np, αN, βN,pp0): angles => begin
         n = rand() < N % 1 ? ceil(N) : floor(N)
         P = [(pα(), pβ()) for i in 0:n]
         O = [to(α, β) for (α, β) in P]
@@ -275,20 +300,37 @@ end
     β(A): radial_angle => A[2] ~ preserve(u"°")
 
     RT0: parent_transformation ~ track::Transformation(override)
-    pp(RT0): parent_position => RT0(Point3f(0, 0, 0)) ~ preserve::Point3f
-    np(RT0, nounit(Δl); α, β): new_position => begin
+    tiller_flag ~ track::Bool(override)
+    pp0 ~track::Point3f(override)
+    pp(RT0,tiller_flag,pp0): parent_position => begin
+	RT0(pp0)
+    end ~ preserve::Point3f
+    np(RT0, nounit(Δl),pp0; α, β): new_position => begin
         R = RotZX(β, α) |> LinearMap
-        (RT0 ∘ R)(Point3f(0, 0, -Δl))
+	(RT0 ∘ R)(Point3f(pp0[1], pp0[2], -Δl))
+
     end ~ call::Point3f
-    RT(nounit(l), α, β): local_transformation => begin
+    RT(nounit(l), α, β,pp0): local_transformation => begin
         # put root segment at parent's end
         T = Translation(0, 0, -l)
         # rotate root segment
         R = RotZX(β, α) |> LinearMap
         R ∘ T
-    end ~ track::Transformation
-    RT1(RT0, RT): global_transformation => RT0 ∘ RT ~ track::Transformation
-    cp(RT1): current_position => RT1(Point3f(0, 0, 0)) ~ track::Point3f
+    end ~ track::AbstractAffineMap
+    RT1(RT0, RT): global_transformation => (RT0)∘
+(RT) ~ track::Transformation
+    rhizome_angle => 0 ~ preserve(u"°", parameter)
+
+
+    RT_trans(RT1, pp0): translation_transformation => begin
+	T = Translation(pp0[1], pp0[2], pp0[3])
+	T ∘ RT1
+    end ~ track::AbstractAffineMap
+
+    cp(RT1,pp0,tiller_flag): current_position => begin
+	RT1(pp0) 
+	
+    end ~ track::Point3f
 
     # Attempt at dynamic radius
     # ISSUE: Radius growth is happening backwards, thicker at the bottom
@@ -296,13 +338,47 @@ end
     # Very intensive in terms of processing/time
     # OR: Could hard code a simulation stop time into the config that's passed here. Can then do
     # (stop time - t) as the time calculation to get diameter to work
-    ri: radius_initial => 0.04 ~ preserve(u"cm", extern, parameter, min = 0.01)
-    thr: radius_threshold => 0.1 ~ preserve(u"cm", extern, parameter, min = 0.01)
-    gr: radius_growth_rate => 0.0005 ~ preserve(u"mm/hr", extern, parameter, min = 0.0000001)
-    fl(a, thr): flag_variable => a < thr ~ flag
-    a(gr): radius ~ accumulate(u"mm", init = ri, when = fl, min=0.01) 
+    ai: radius_initial => 0.04 ~ preserve(u"cm", extern, parameter, min = 0.01)
+    amax: radius_threshold => 0.1 ~ preserve(u"cm", extern, parameter, min = 0.01)
+    ar: radius_growth_rate => 0.0005 ~ preserve(u"mm/hr", extern, parameter, min = 0.0000001)
+    fl(a, amax): flag_variable => a < amax ~ flag
+    a(ar): radius ~ accumulate(u"mm", init = ai, when = fl, min=0.01) 
 
-    c: color => RGBA(1, 1, 1, 1) ~ preserve::RGBA(parameter)
+    #c(name): color => begin
+	#if name==:Shoot	
+	#	RGBA(1, 1, 1, 1)
+	#elseif name==:PrimaryRoot
+	#	RGBA(1, 0, 0, 1)
+	#elseif name==:FirstOrderLateralRoot
+	#	RGBA(0, 1, 0, 1)
+	#elseif name==:Rhizome
+	#	RGBA(0, 0, 1, 1)
+	#elseif name==:TillerShoot
+#		RGBA(1, 1, 0, 1)
+#	end
+
+		
+
+#   end~ track::RGBA
+
+    c(name): color => begin
+	if name==:Shoot	
+		[255 255 255 255]
+	elseif name==:PrimaryRoot
+		[255 0 0 255]
+	elseif name==:FirstOrderLateralRoot
+		[0 255 0 255]
+	elseif name==:Rhizome
+		[0 0 255 255]
+	elseif name==:TillerShoot
+		[255 255 0 255]
+	else
+		[0 255 255 255]
+	end
+
+		
+
+   end~ track::Matrix
 
     n: name ~ hold
     T: transition ~ hold
@@ -318,25 +394,72 @@ end
     end ~ call::sym
 
     ms(l, Δl, lt, lmax): may_segment => (l >= Δl && lt < lmax) ~ flag
-    S(n, box, ro, zi, r, lb, la, ln, lmax, lt, ls1, wrap(RT1), a): segment => begin
+    p_rhizome: rhizome_probability => .05 ~ preserve(parameter)
+    S(n, box, ro, zi, r, lb, la, ln, lmax, lt, ls1, wrap(RT1), a, p_rhizome,name,ro,σ,tiller_flag,pp0): segment => begin
         #HACK: keep lb/la/ln/lmax parameters same for consecutive segments
-        produce(eval(n); box, ro, zi=zi+1, r, lb, la, ln, lmax, lp=lt, ls=ls1, RT0=RT1, a)
+		produce(eval(n); box, ro, zi=zi+1, r, lb, la, ln, lmax, lp=lt, ls=ls1, RT0=RT1, ai=a,σ=σ,tiller_flag=Cropbox.Track(tiller_flag),pp0=Cropbox.Track(pp0))
+	
     end ~ produce::Segment(when=ms)
 
+
+
     mb(zt, li, ln): may_branch => (zt == :lateral && li >= ln) ~ flag
-    B(nb, box, ro, wrap(RT1)): branch => begin
+    B(nb, box, ro, wrap(RT1), p_rhizome,name,ro,a,tiller_flag,pp0): branch => begin
         #HACK: eval() for Symbol-based instantiation based on tabulate-d matrix
-        produce(eval(nb()); box, ro=ro+1, RT0=RT1)
+	if name!=:Rhizome
+		produce(eval(nb()); box, ro=ro+1, RT0=RT1,tiller_flag=Cropbox.Track(tiller_flag),pp0=Cropbox.Track(pp0))
+	end
     end ~ produce::Branch(when=mb)
+
+
+    rhizome(nb, box, ro, wrap(RT1), p_rhizome,name,ro,li,ln,mb,lr,lmax,lt,ls1,lb,la,ln,ms,tiller_flag,pp0) => begin
+        #HACK: eval() for Symbol-based instantiation based on tabulate-d matrix
+        #produce(eval(nb()); box, ro=ro+1, RT0=RT1)
+	rhizome = rand()
+	if(rhizome<p_rhizome && name==:Shoot)
+        	produce(Rhizome; box, RT0=RT1, θ=0,lb, la, ln, lmax, lp=lt, ls=ls1, σ=0,tiller_flag=Cropbox.Track(tiller_flag),pp0=Cropbox.Track(pp0))
+		#produce(Rhizome; box, RT0=RT1, ai=.6u"cm", θ=0, β=90, α=0, lb, la, ln, lmax, lp=lt, ls=ls1, σ=0,tiller_flag)
+	end
+    end ~ produce::Rhizome(when=mb)
+
+
 
     ii(cp; c::Container): is_inside => (c.dist'(cp) <= 0) ~ call::Bool
     im(l, Δl, lt, lmax): is_mature => (l >= Δl || lt >= lmax) ~ flag
 
     is(S): is_segmented => !isnothing(S) ~ flag
     ib(B): is_branched => !isnothing(B) ~ flag
+
+
+   id(im, ms, is, mb, ib): is_done => begin
+        	#HACK: merely checking im flag would miss pre-stage update for producing S
+        	im && (ms && is || !ms) && (mb && ib || !mb)
+        end ~ flag
+
+   mt(name, t, delayS): may_tiller => begin
+        	#HACK: merely checking im flag would miss pre-stage update for producing S
+        	t%delayS==0u"hr" && name==:Rhizome
+   end ~ flag
+   tiller_count => 3 ~ preserve(parameter)
+   tillers(tillers, box, wrap(RT0),tiller_count,current_diameter,name,delayS,name,nb,pp0) => begin
+        
+         #x_trans = current_diameter/2*cos(2*pi*rand())
+         #y_trans = current_diameter/2*sin(2*pi*rand())
+         #trans = RotX(0)
+	 #RT1 = Translation(x_trans,y_trans,0)
+	 #curr_size = (length(tillers)+1)
+         #b = [produce(Shoot; box, RT0,pp0	#=Cropbox.Track(Point3f(x_trans,y_trans,0)),tiller_flag=Cropbox.Track(true)#) for j in (length(tillers)+1):(maxB)]
+
+	#if(t%delayS==0u"d" && name==:Rhizome)
+        [produce(eval(nb()); box, RT0,tiller_flag=Cropbox.Track(true),pp0=Cropbox.Track(pp0)) for j in 1:(tiller_count)]
+
+	#end
+    end ~ produce::Branch(when=mt)
+    current_diameter => 0 ~ preserve(parameter)
+
 end
 
-mesh(s::RootSegment) = begin
+mesh(s::RootSegment;color=true) = begin
     l = Cropbox.deunitfy(s.l', u"cm")
     a = Cropbox.deunitfy(s.a', u"cm")
     (iszero(l) || iszero(a)) && return nothing
@@ -347,70 +470,142 @@ mesh(s::RootSegment) = begin
     #HACK: reconstruct a mesh with transformation applied
     mv = GeometryBasics.decompose(GeometryBasics.Point, m)
     mf = GeometryBasics.decompose(GeometryBasics.TriangleFace{Int}, m)
-    M = s.RT1'
+    M = s.RT_trans'
     m = GeometryBasics.normal_mesh(M.(mv), mf)
 
     c = s.color'
+    t = s.name;
     n = length(GeometryBasics.coordinates(m))
-    GeometryBasics.pointmeta(m; color=fill(c, n))
+    #print(n)
+    #if color
+    #m = GeometryBasics.mesh(m,vertex_attributes=(color=fill(c, n*8)))
+    #print(c)
+    m = GeometryBasics.mesh(m, color= GeometryBasics.per_face(fill(c, 12), m))
+
+    #end
+    #GeometryBasics.pointmeta(m; color=fill(c, n), root_type=fill(t, n))
 end
 
 #TODO: provide @macro / function to automatically build a series of related Systems
 @system BaseRoot(RootSegment) <: RootSegment begin
-    T: transition ~ tabulate(rows=(:PrimaryRoot, :FirstOrderLateralRoot, :SecondOrderLateralRoot, #= :ThirdOrderLateralRoot =#), parameter)
+    T: transition ~ tabulate(rows=(:Shoot, :PrimaryRoot, :FirstOrderLateralRoot, :SecondOrderLateralRoot, :Rhizome,:TillerShoot ), parameter)
 end
+
 @system ThirdOrderLateralRoot{
     Segment => ThirdOrderLateralRoot,
+    #Rhizome => Rhizome,
+
 }(BaseRoot, Gravitropism) <: BaseRoot begin
     n: name => :ThirdOrderLateralRoot ~ preserve::sym
 end
 @system SecondOrderLateralRoot{
     Segment => SecondOrderLateralRoot,
     #= Branch => ThirdOrderLateralRoot, =#
+    #Rhizome => Rhizome,
+
 }(BaseRoot, Gravitropism) <: BaseRoot begin
     n: name => :SecondOrderLateralRoot ~ preserve::sym
 end
 @system FirstOrderLateralRoot{
     Segment => FirstOrderLateralRoot,
     Branch => SecondOrderLateralRoot,
-}(BaseRoot, Gravitropism) <: BaseRoot begin
+    #Rhizome => Rhizome,
+}(BaseRoot, Gravitropism, Exotropism, Plagiotropism) <: BaseRoot begin
     n: name => :FirstOrderLateralRoot ~ preserve::sym
 end
 @system PrimaryRoot{
     Segment => PrimaryRoot,
     Branch => FirstOrderLateralRoot,
+    #Rhizome => Rhizome,
 }(BaseRoot, Gravitropism) <: BaseRoot begin
     n: name => :PrimaryRoot ~ preserve::sym
 end
+@system TillerShoot{
+    Segment => TillerShoot,
+    Branch => PrimaryRoot,
+    #Rhizome => Rhizome,
+}(BaseRoot, Gravitropism) <: BaseRoot begin
+    n: name => :TillerShoot ~ preserve::sym
+end
+@system Rhizome{
+    Segment => Rhizome,
+    Branch => TillerShoot,
+    Rhizome => Rhizome,
+}(BaseRoot, Plagiotropism) <: BaseRoot begin
+    n: name => :Rhizome ~ preserve::sym
+end
+@system Shoot{
+    Segment => Shoot,
+    Branch => PrimaryRoot,
+    Rhizome => Rhizome,
+}(BaseRoot, Gravitropism) <: BaseRoot begin
+    n: name => :Shoot ~ preserve::sym
+end
 
+
+
+Cropbox.update!(s::BaseRoot, t) = begin
+    if s.id'
+        Cropbox.update!(s.S', t)
+        Cropbox.update!(s.B', t)
+        Cropbox.update!(s.rhizome', t)
+
+    else
+        Cropbox._update!(s, t)
+    end
+end
 
 @system RootArchitecture(Controller) begin
     box(context) ~ <:Container(override)
     minB: minimum_number_of_basal_roots => 1 ~ preserve(parameter)
-    maxB: number_of_basal_roots => 1 ~ preserve(parameter, min=minB)
+    maxB: number_of_basal_roots => 5 ~ preserve(parameter, min=minB)
     RT0: initial_transformation => IdentityTransformation() ~ track::Transformation
+    RT1: second_transformation => Translation(0,0,0) ~ track::Transformation
+    #RT1: second_transformation => LinearMap(RotX(1))∘Translation(-4,0,0) ~ track::Transformation
+
     roots(roots, box, maxB, wrap(RT0)) => begin
-        [produce(PrimaryRoot; box, RT0) for i in (length(roots)+1):maxB]
-    end ~ produce::PrimaryRoot[]
+        
+	a = [produce(Shoot; box, RT0,pp0=Cropbox.Track(Point3f(0,0,0)),tiller_flag=Cropbox.Track(false)) for i in (length(roots)+1):maxB]
+
+
+    end ~ produce::Shoot[]
+
+
+ 
+
+
+
+
 end
 
 render(s::RootArchitecture; soilcore=nothing, resolution=(500, 500)) = begin
     #HACK: comfortable default size when using WGLMakie inside Jupyter Notebook
-    scene = Makie.Scene(; resolution)
-    Makie.mesh!(scene, mesh(s))
+    fig = Makie.Figure(; resolution)
+    scene = Makie.LScene(fig[1, 1], show_axis = false)
+    positions = GeometryBasics.coordinates(s)
+    faces_data = GeometryBasics.faces(s)
+
+    # Create a new, minimal mesh using only positions and faces
+    minimal_mesh = Mesh(positions, faces_data)
+    Makie.mesh!(scene, mesh(s,color=true))
+    #Makie.mesh!(scene, mesh(minimal_mesh))
+
     #HACK: customization for container
     Makie.mesh!(scene, mesh(s.box), color=(:black, 0.02), transparency=true, shading=false)
     !isnothing(soilcore) && Makie.mesh!(scene, mesh(soilcore), color=(:purple, 0.1), transparency=true, shading=false)
-    scene
+    fig
 end
 
-mesh(s::RootArchitecture; container=nothing) = begin
+mesh(s::RootArchitecture; container=nothing,color=true) = begin
     meshes = GeometryBasics.Mesh[]
-    gather!(s, Rendering; store=meshes, callback=render!, kwargs=(; container))
+    gather!(s, Rendering; store=meshes, callback=render!, kwargs=(; container,color))
+    #print(meshes)
     isempty(meshes) ? nothing : merge(meshes)
 end
-render!(g::Gather, r::RootSegment, ::Val{:Rendering}; container=nothing) = begin
-    m = isnothing(container) || r.ii'(container) ? mesh(r) : nothing
+render!(g::Gather, r::RootSegment, ::Val{:Rendering}; container=nothing,color=true) = begin
+
+    m = isnothing(container) || r.ii'(container) ? mesh(r,color=true) : nothing
+    #print(m)
     !isnothing(m) && push!(g, m)
     visit!(g, r; container)
 end
@@ -420,6 +615,10 @@ gatherbaseroot!(g::Gather, s::BaseRoot, ::Val{:BaseRoot}) = (push!(g, s); visit!
 gatherbaseroot!(g::Gather, a...) = visit!(g, a...)
 
 #TODO: implement a simpler generic gather interface
+gather_shoot!(g::Gather, s::Shoot, ::Val{:BaseRoot}) = (push!(g, s); visit!(g, s))
+gather_shoot!(g::Gather, s::BaseRoot, ::Val{:BaseRoot}) = visit!(g, s)
+gather_shoot!(g::Gather, a...) = visit!(g, a...)
+
 gather_primaryroot!(g::Gather, s::PrimaryRoot, ::Val{:BaseRoot}) = (push!(g, s); visit!(g, s))
 gather_primaryroot!(g::Gather, s::BaseRoot, ::Val{:BaseRoot}) = visit!(g, s)
 gather_primaryroot!(g::Gather, a...) = visit!(g, a...)
@@ -489,186 +688,12 @@ writestl(name::AbstractString, s::System) = writestl(name, mesh(s))
 writestl(name::AbstractString, m::Mesh) = save(File{format"STL_BINARY"}(name), m)
 writestl(name::AbstractString, ::Nothing) = @warn "no mesh available for writing $name"
 
+writeply(name::AbstractString, s::System) = writeply(name, mesh(s))
+writeply(name::AbstractString, m::Mesh) =  save(File{format"PLY_BINARY"}(name), m)
+#writeply(name::AbstractString, m::Mesh) = save_ply(m, name)
+writeply(name::AbstractString, ::Nothing) = @warn "no mesh available for writing $name"
+
+
 #### CropRootBox End
 
-
-
-
-# CONFIGS
-
-### Figure 1-4 root config
-root_maize = @config(
-    :RootArchitecture => :maxB => 5,
-    :BaseRoot => :T => [
-        # P F S
-          0 1 0 ; # P
-          0 0 1 ; # F
-          0 0 0 ; # S
-    ],
-    :PrimaryRoot => (;
-        lb = 0.1 ± 0.01,
-        la = 18.0 ± 1.8,
-        ln = 0.6 ± 0.06,
-        lmax = 89.7 ± 7.4,
-        r = 6.0 ± 0.6,
-        Δx = 0.5,
-        σ = 10,
-        θ = 80 ± 8,
-        N = 1.5,
-        ri = 0.04 ± 0.004,
-        gr = 0.005,
-        thr = 0.1,
-        color = RGBA(1, 0, 0, 1),
-    ),
-    :FirstOrderLateralRoot => (;
-        lb = 0.2 ± 0.04,
-        la = 0.4 ± 0.04,
-        ln = 0.4 ± 0.03,
-        lmax = 0.6 ± 1.6,
-        r = 2.0 ± 0.2,
-        Δx = 0.1,
-        σ = 20,
-        θ = 70 ± 15,
-        N = 1,
-        ri = 0.03 ± 0.003,
-        gr = 0.003,
-        thr = 0.07,
-        color = RGBA(0, 1, 0, 1),
-    ),
-    :SecondOrderLateralRoot => (;
-        lb = 0,
-        la = 0.4 ± 0.02,
-        ln = 0,
-        lmax = 0.4,
-        r = 2.0 ± 0.2,
-        Δx = 0.1,
-        σ = 20,
-        θ = 70 ± 10,
-        N = 2,
-        ri = 0.02 ± 0.002,
-        gr = 0.001,
-        thr = 0.03,
-        color = RGBA(0, 0, 1, 1),
-    )
-)
-
-
-# Figure 1
-container_rhizobox = :Rhizobox => (;
-    l = 16u"inch",
-    w = 10.5u"inch",
-    h = 42u"inch",
-)
-
-
-# Figure 2
-container_rhizobox = :Rhizobox2 => (;
-    l = 5u"inch",
-    w = 10u"inch",
-    h = 40u"inch",
-    θ_w = 70u"°",
-    θ_l = 90u"°",
-    w_scale = 0,
-    l_scale = 0,
-)
-
-
-# Figure 3
-container_rhizobox = :Rhizobox2 => (;
-    l = 5u"inch",
-    w = 10u"inch",
-    h = 40u"inch",
-    θ_w = 70u"°",
-    θ_l = 90u"°",
-    w_scale = 0.25,
-    l_scale = 1,
-)
-
-
-# Figure 4
-container_rhizobox = :Rhizobox2 => (;
-    l = 5u"inch",
-    w = 10u"inch",
-    h = 40u"inch",
-    θ_w = 70u"°",
-    θ_l = 80u"°",
-    w_scale = 0,
-    l_scale = 0,
-)
-
-
-# Figure 5
-root_maize = @config(
-    :RootArchitecture => :maxB => 5,
-    :BaseRoot => :T => [
-        # P F S
-          0 1 0 ; # P
-          0 0 1 ; # F
-          0 0 0 ; # S
-    ],
-    :PrimaryRoot => (;
-        lb = 0.1 ± 0.01,
-        la = 18.0 ± 1.8,
-        ln = 0.6 ± 0.06,
-        lmax = 89.7 ± 7.4,
-        r = 6.0 ± 0.6,
-        Δx = 0.5,
-        σ = 10,
-        θ = 80 ± 8,
-        N = 1.5,
-        ri = 0.04 ± 0.004,
-        gr = 0.005,
-        thr = 1.0,
-        color = RGBA(1, 0, 0, 1),
-    ),
-    :FirstOrderLateralRoot => (;
-        lb = 0.2 ± 0.04,
-        la = 0.4 ± 0.04,
-        ln = 0.4 ± 0.03,
-        lmax = 0.6 ± 1.6,
-        r = 2.0 ± 0.2,
-        Δx = 0.1,
-        σ = 20,
-        θ = 70 ± 15,
-        N = 1,
-        ri = 0.03 ± 0.003,
-        gr = 0.003,
-        thr = 0.7,
-        color = RGBA(0, 1, 0, 1),
-    ),
-    :SecondOrderLateralRoot => (;
-        lb = 0,
-        la = 0.4 ± 0.02,
-        ln = 0,
-        lmax = 0.4,
-        r = 2.0 ± 0.2,
-        Δx = 0.1,
-        σ = 20,
-        θ = 70 ± 10,
-        N = 2,
-        ri = 0.02 ± 0.002,
-        gr = 0.001,
-        thr = 0.3,
-        color = RGBA(0, 0, 1, 1),
-    )
-)
-
-container_rhizobox = :Rhizobox2 => (;
-    l = 5u"inch",
-    w = 10u"inch",
-    h = 40u"inch",
-    θ_w = 70u"°",
-    θ_l = 90u"°",
-    w_scale = 0,
-    l_scale = 0,
-)
-
-
-# SIMULATE AND RUN CONFIGS
-b = instance(Rhizobox2, config = container_rhizobox)
-s = instance(RootArchitecture; config = root_maize, options = (; box = b), seed = 0)
-r = simulate!(s, stop = 100u"d") #(to see diameter effect, reduce simulation length to 10d)
-
-scn = render(s)
-
-
+end
