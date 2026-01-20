@@ -1,7 +1,6 @@
 module CropRootBox
 using Cropbox
-#using GLMakie
-#using Test
+
 using FileIO
 using PlyIO
 
@@ -15,7 +14,6 @@ using GeometryBasics: GeometryBasics, Mesh, Point3f, coordinates, faces, FaceVie
 using CoordinateTransformations: IdentityTransformation, LinearMap, Transformation, Translation, recenter, AbstractAffineMap
 using Rotations: RotZX, RotXY, RotX, RotY, RotZ
 using Colors: RGBA
-#using StaticArrays
 import UUIDs
 
 @system Rendering
@@ -125,13 +123,7 @@ mesh(s::Rhizobox2) = begin
     mf = GeometryBasics.decompose(GeometryBasics.TriangleFace{Int}, m) # Decompose mesh into faces
     M = s.RT'
 
-
-    m = GeometryBasics.normal_mesh(M.(mv), mf) # Apply rotation to coordinates and connect back together using faces
-    n = length(GeometryBasics.coordinates(m))
-    #print(n)
-    #if color
-    m = GeometryBasics.mesh(m,vertex_attributes=(color=fill(RGBA(1,1,1,1), n)))
-    #end
+    GeometryBasics.normal_mesh(M.(mv), mf) # Apply rotation to coordinates and connect back together using faces
 end
 
 @system SoilCore(Container) <: Container begin
@@ -315,12 +307,35 @@ end
         T = Translation(0, 0, -l)
         # rotate root segment
         R = RotZX(β, α) |> LinearMap
+	#println(T)
+	#println(R)
         R ∘ T
     end ~ track::AbstractAffineMap
     RT1(RT0, RT): global_transformation => (RT0)∘
 (RT) ~ track::Transformation
     rhizome_angle => 0 ~ preserve(u"°", parameter)
+    RT_rhiz(nounit(l),rhizome_angle,RT0): rhizome_transformation => begin
+        # put root segment at parent's end
+        T = Translation(0, 0, -l)
+        # rotate root segment
+        R = LinearMap(RotZ(rhizome_angle)) 
+        RT0 ∘ R ∘ T
+    end ~ track::Transformation
 
+    cp(RT1): current_position => RT1(Point3f(0, 0, 0)) ~ track::Point3f
+
+    # Attempt at dynamic radius
+    # ISSUE: Radius growth is happening backwards, thicker at the bottom
+    # SOLUTION: Somehow trace back to previous parent roots and update based on time step?
+    # Very intensive in terms of processing/time
+    # OR: Could hard code a simulation stop time into the config that's passed here. Can then do
+    # (stop time - t) as the time calculation to get diameter to work
+    ai: radius_initial => 0.04 ~ preserve(u"cm", extern, parameter, min = 0.01)
+    amax: radius_threshold => 0.1 ~ preserve(u"cm", extern, parameter, min = 0.01)
+    ar: radius_growth_rate => 0.0005 ~ preserve(u"mm/hr", extern, parameter, min = 0.0000001)
+    fl(a, amax): flag_variable => a < amax ~ flag
+    a(ar): radius ~ accumulate(u"mm", init = ai, when = fl, min=0.01) 
+>>>>>>> 5863794edd2bc37ec57667ad8e7398731644acc6
 
     RT_trans(RT1, pp0): translation_transformation => begin
 	T = Translation(pp0[1], pp0[2], pp0[3])
@@ -418,7 +433,7 @@ end
 	rhizome = rand()
 	if(rhizome<p_rhizome && name==:Shoot)
         	produce(Rhizome; box, RT0=RT1, θ=0,lb, la, ln, lmax, lp=lt, ls=ls1, σ=0,tiller_flag=Cropbox.Track(tiller_flag),pp0=Cropbox.Track(pp0))
-		#produce(Rhizome; box, RT0=RT1, ai=.6u"cm", θ=0, β=90, α=0, lb, la, ln, lmax, lp=lt, ls=ls1, σ=0,tiller_flag)
+
 	end
     end ~ produce::Rhizome(when=mb)
 
@@ -450,13 +465,9 @@ end
 	 #curr_size = (length(tillers)+1)
          #b = [produce(Shoot; box, RT0,pp0	#=Cropbox.Track(Point3f(x_trans,y_trans,0)),tiller_flag=Cropbox.Track(true)#) for j in (length(tillers)+1):(maxB)]
 
-	#if(t%delayS==0u"d" && name==:Rhizome)
         [produce(eval(nb()); box, RT0,tiller_flag=Cropbox.Track(true),pp0=Cropbox.Track(pp0)) for j in 1:(tiller_count)]
-
-	#end
     end ~ produce::Branch(when=mt)
     current_diameter => 0 ~ preserve(parameter)
-
 end
 
 mesh(s::RootSegment;color=true) = begin
@@ -476,13 +487,8 @@ mesh(s::RootSegment;color=true) = begin
     c = s.color'
     t = s.name;
     n = length(GeometryBasics.coordinates(m))
-    #print(n)
-    #if color
-    #m = GeometryBasics.mesh(m,vertex_attributes=(color=fill(c, n*8)))
-    #print(c)
-    m = GeometryBasics.mesh(m, color= GeometryBasics.per_face(fill(c, 12), m))
 
-    #end
+    m = GeometryBasics.mesh(m, color= GeometryBasics.per_face(fill(c, 12), m))
     #GeometryBasics.pointmeta(m; color=fill(c, n), root_type=fill(t, n))
 end
 
@@ -530,6 +536,7 @@ end
 @system Rhizome{
     Segment => Rhizome,
     Branch => TillerShoot,
+
     Rhizome => Rhizome,
 }(BaseRoot, Plagiotropism) <: BaseRoot begin
     n: name => :Rhizome ~ preserve::sym
@@ -561,7 +568,6 @@ end
     maxB: number_of_basal_roots => 5 ~ preserve(parameter, min=minB)
     RT0: initial_transformation => IdentityTransformation() ~ track::Transformation
     RT1: second_transformation => Translation(0,0,0) ~ track::Transformation
-    #RT1: second_transformation => LinearMap(RotX(1))∘Translation(-4,0,0) ~ track::Transformation
 
     roots(roots, box, maxB, wrap(RT0)) => begin
         
@@ -569,13 +575,6 @@ end
 
 
     end ~ produce::Shoot[]
-
-
- 
-
-
-
-
 end
 
 render(s::RootArchitecture; soilcore=nothing, resolution=(500, 500)) = begin
@@ -588,8 +587,6 @@ render(s::RootArchitecture; soilcore=nothing, resolution=(500, 500)) = begin
     # Create a new, minimal mesh using only positions and faces
     minimal_mesh = Mesh(positions, faces_data)
     Makie.mesh!(scene, mesh(s,color=true))
-    #Makie.mesh!(scene, mesh(minimal_mesh))
-
     #HACK: customization for container
     Makie.mesh!(scene, mesh(s.box), color=(:black, 0.02), transparency=true, shading=false)
     !isnothing(soilcore) && Makie.mesh!(scene, mesh(soilcore), color=(:purple, 0.1), transparency=true, shading=false)
@@ -690,7 +687,7 @@ writestl(name::AbstractString, ::Nothing) = @warn "no mesh available for writing
 
 writeply(name::AbstractString, s::System) = writeply(name, mesh(s))
 writeply(name::AbstractString, m::Mesh) =  save(File{format"PLY_BINARY"}(name), m)
-#writeply(name::AbstractString, m::Mesh) = save_ply(m, name)
+
 writeply(name::AbstractString, ::Nothing) = @warn "no mesh available for writing $name"
 
 
