@@ -1,8 +1,8 @@
-module CropRootBox
+﻿module CropRootBox
 using Cropbox
 
 using FileIO
-using PlyIO
+
 
 
 #### CropRootBox Start
@@ -322,8 +322,6 @@ end
         RT0 ∘ R ∘ T
     end ~ track::Transformation
 
-    cp(RT1): current_position => RT1(Point3f(0, 0, 0)) ~ track::Point3f
-
     # Attempt at dynamic radius
     # ISSUE: Radius growth is happening backwards, thicker at the bottom
     # SOLUTION: Somehow trace back to previous parent roots and update based on time step?
@@ -335,7 +333,6 @@ end
     ar: radius_growth_rate => 0.0005 ~ preserve(u"mm/hr", extern, parameter, min = 0.0000001)
     fl(a, amax): flag_variable => a < amax ~ flag
     a(ar): radius ~ accumulate(u"mm", init = ai, when = fl, min=0.01) 
->>>>>>> 5863794edd2bc37ec57667ad8e7398731644acc6
 
     RT_trans(RT1, pp0): translation_transformation => begin
 	T = Translation(pp0[1], pp0[2], pp0[3])
@@ -347,17 +344,6 @@ end
 	
     end ~ track::Point3f
 
-    # Attempt at dynamic radius
-    # ISSUE: Radius growth is happening backwards, thicker at the bottom
-    # SOLUTION: Somehow trace back to previous parent roots and update based on time step?
-    # Very intensive in terms of processing/time
-    # OR: Could hard code a simulation stop time into the config that's passed here. Can then do
-    # (stop time - t) as the time calculation to get diameter to work
-    ai: radius_initial => 0.04 ~ preserve(u"cm", extern, parameter, min = 0.01)
-    amax: radius_threshold => 0.1 ~ preserve(u"cm", extern, parameter, min = 0.01)
-    ar: radius_growth_rate => 0.0005 ~ preserve(u"mm/hr", extern, parameter, min = 0.0000001)
-    fl(a, amax): flag_variable => a < amax ~ flag
-    a(ar): radius ~ accumulate(u"mm", init = ai, when = fl, min=0.01) 
 
     #c(name): color => begin
 	#if name==:Shoot	

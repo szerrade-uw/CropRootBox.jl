@@ -6,20 +6,60 @@ Pkg.instantiate()
 using Cropbox
 using CropRootBox
 using PyCall
-@pyimport trimesh 
+#@pyimport trimesh 
 using GeometryBasics
 using StaticArrays
 using DataFrames
 using CSV
+using Base.Threads
+using PythonCall
 
+trimesh=PythonCall.pyimport("trimesh")
+function check_lock(lock)
+	if(sum(lock)>0)
+		lock[Threads.threadid()] = 0
+		return false
+	else
+		lock[Threads.threadid()] = 1
+		return true
+	end
+end
 
-function trimesh_ply(f,s)
+function wait(lock)
+	while sum(lock)>0
+		sleep(.01)
+	end
+	lock[Threads.threadid()] = 1
+end
+function trimesh_ply(f,s,lock)
     #m = CropRootBox.mesh(s)
     p = [SVector(0.0f0, 0.0f0, 0.0f0)]
-    shifted = [p; coordinates(s)]
-    k = reduce(vcat,values(s.color))
-    tri_mesh = trimesh.Trimesh(vertices=shifted,faces=faces(s), vertex_normals=s.normal, face_colors=k)
-    tri_mesh.export(f)
+    shifted = [p; GeometryBasics.coordinates(s)]
+    k = reduce(vcat,GeometryBasics.values(s.color))
+
+   # println("trimesh time")
+    
+    #tri_mesh =  trimesh.Trimesh(vertices=[1],faces=faces(s), vertex_normals=s.normal, face_colors=k)
+    task_finished = false
+
+    println("Check1: "*string(Threads.threadid())*" "*string(lock[1]))
+    wait(lock)
+    lock[Threads.threadid()] = 1
+    #print("out of loop not in while "*string(sum(lock)))
+    #println("Check2: "*string(Threads.threadid())*" "*string(lock[1]))
+    shifted =  PythonCall.GIL.@lock pyrowlist(shifted) 
+    lock[Threads.threadid()]= 0 
+    wait(lock)
+    tri_mesh = PythonCall.GIL.@lock trimesh.Trimesh(vertices=shifted,faces=pyrowlist(faces(s)), vertex_normals=pyrowlist(s.normal), face_colors=pyrowlist(k))
+    #println("trimesh worked")
+    lock[Threads.threadid()]= 0 
+    wait(lock)
+    PythonCall.GIL.@lock tri_mesh.export(f) 
+    #println("file saved") 
+    lock[Threads.threadid()]= 0 
+    return true
+
+	
 
 end
 root_switchgrass_WBC_bpmod = (
@@ -127,22 +167,28 @@ container = :Rhizobox => (;
     l = 100.0u"cm",
     h = 200.0u"cm",
 )
-seed_path=""
+
         b = instance(CropRootBox.Rhizobox, config=container)
         #o = instance(CropRootBox.SoilCore, config=@config(:SoilCore => (;length=25u"cm")))
-        summary = DataFrame(time = [],position = [], layer=[],length = [],count = [],volume = [], density = [])
         n = "switchgrass"   
         b = instance(CropRootBox.Rhizobox, config=container)
         t = 10
         L = [instance(CropRootBox.SoilLayer, config=:SoilLayer => (; d, t)) for d in [0,10,20]]
 
-        p = 100u"d"
+        p = 1000u"hr"
         path = "D:/Workspace/szerrade/swg/"
-
-        for run in 0:50
+	a = zeros(101)
+	
+	lock = zeros(101)
+        PythonCall.GIL.@unlock @threads for run in 0:50
+	    a[run+1] = Threads.threadid()
             seed_path = path*"Sim_"*string(run)*"/"
             seed = run + 10000
 	    mkpath(seed_path)
+ 	    summary = DataFrame(time = [],position = [], layer=[],length = [],count = [],volume = [], density = [])
+       	    if isfile(seed_path*"SWG_full_1000hr.ply") || isfile(seed_path*"SWG_full_2400hr.ply")
+		continue
+	    end 
             s = instance(CropRootBox.RootArchitecture; config=root_switchgrass_WBC_bpmod, options=(; box=b), seed=seed);
             CSV.write(string(seed_path)*"Input_parameters.csv",root_switchgrass_WBC_bpmod)
             r = simulate!(s, stop=p, snap=50u"hr") do D, s
@@ -169,7 +215,9 @@ seed_path=""
                         if(!isnothing(m))
                     
                             current_time = D[1][:time]
-                            trimesh_ply(string(seed_path) *"SWG_"*string(f)*"_"*string(g)*"_"*string(current_time)*".ply", m)
+			    #println(string(a[run+1])*"1")
+                            trimesh_ply(string(seed_path) *"SWG_"*string(f)*"_"*string(g)*"_"*string(current_time)*".ply", m,lock)
+			    #println(string(a[run+1])*"2")
                             for (i, l) in enumerate(L)
                                 ll = [s.length' for s in G if s.ii(l) && s.ii(o)]
                                 D[1][Symbol("($f,$g)L$(i-1)")] = !isempty(ll) ? sum(ll) : 0.0u"cm"
@@ -195,9 +243,9 @@ seed_path=""
                     
                 end
                 end
-                trimesh_ply(string(seed_path)*"SWG_full.ply"*string(f), CropRootbox.mesh(s));
-                CSV.write(string(seed_path)*"Output_parameters.csv",D)
-                CSV.write(string(seed_path)*"Input_parameters.csv",r)
+                trimesh_ply(string(seed_path)*"SWG_full_1000hr.ply", CropRootBox.mesh(s),lock);
+                CSV.write(string(seed_path)*"Output_parameters.csv",summary)
+                CSV.write(string(seed_path)*"Input_parameters.csv",root_switchgrass_WBC_bpmod )
 
 end
     
@@ -255,12 +303,12 @@ root_switchgrass_VS16_mid_thick = (
         p_rhizome  = .05,
     ),
     :BaseRoot => :T => [
-        # S P F S    R
-          0 1 0  0 1 #; # P
-          0 0 1  0 0##; # F
-          0 0 0  0 0##; # S
-          0 0 0  0 0  ; # T =#
-          0 1 0 0 1
+        0 1 0 0 0 0;
+        0 0 1 0 0 0;
+        0 0 0 0 0 0;
+        0 0 0 0 0 0;
+        0 0 0 0 0 1;
+        0 1 0 0 0 0;
     ],
     :PrimaryRoot => (;
         lb = 1.0 ± 0.25,
@@ -305,20 +353,18 @@ root_switchgrass_VS16_mid_thick = (
 )
 
 
-
-seed_path=""
         b = instance(CropRootBox.Rhizobox, config=container)
         #o = instance(CropRootBox.SoilCore, config=@config(:SoilCore => (;length=25u"cm")))
-        summary = DataFrame(time = [],position = [], layer=[],length = [],count = [],volume = [], density = [])
         n = "switchgrass"   
         b = instance(CropRootBox.Rhizobox, config=container)
         t = 10
         L = [instance(CropRootBox.SoilLayer, config=:SoilLayer => (; d, t)) for d in [0,10,20]]
 
-        p = 100u"d"
+        p = 1000u"hr"
         path = "D:/Workspace/szerrade/swg/"
-
-        for run in 51:100
+        @threads for run in 51:100
+ 	    summary = DataFrame(time = [],position = [], layer=[],length = [],count = [],volume = [], density = [])     
+	    a[run] = Threads.threadid()
             seed_path = path*"Sim_"*string(run)*"/"
             seed = run + 10000
             s = instance(CropRootBox.RootArchitecture; config=root_switchgrass_VS16_mid_thick , options=(; box=b), seed=seed);
@@ -348,7 +394,7 @@ seed_path=""
                         if(!isnothing(m))
                     
                             current_time = D[1][:time]
-                            trimesh_ply(string(seed_path) *"SWG_"*string(f)*"_"*string(g)*"_"*string(current_time)*".ply", m)
+                            trimesh_ply(string(seed_path) *"SWG_"*string(f)*"_"*string(g)*"_"*string(current_time)*".ply", m,lock)
                             for (i, l) in enumerate(L)
                                 ll = [s.length' for s in G if s.ii(l) && s.ii(o)]
                                 D[1][Symbol("($f,$g)L$(i-1)")] = !isempty(ll) ? sum(ll) : 0.0u"cm"
@@ -374,9 +420,9 @@ seed_path=""
                     
                 end
                 end
-                trimesh_ply(string(seed_path)*"SWG_full.ply"*string(f), CropRootbox.mesh(s));
-                CSV.write(string(seed_path)*"Output_parameters.csv",D)
-                CSV.write(string(seed_path)*"Input_parameters.csv",r)
+                trimesh_ply(string(seed_path)*"SWG_full_1000hr.ply", CropRootBox.mesh(s),lock);
+                CSV.write(string(seed_path)*"Output_parameters.csv",summary)
+                CSV.write(string(seed_path)*"Input_parameters.csv",root_switchgrass_VS16_mid_thick )
 
 end
     
