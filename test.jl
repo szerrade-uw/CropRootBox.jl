@@ -195,8 +195,8 @@ seed_path=""
                     
                 end
                 end
-                trimesh_ply(string(seed_path)*"SWG_full.ply"*string(f), CropRootbox.mesh(s));
-                CSV.write(string(seed_path)*"Output_parameters.csv",D)
+                trimesh_ply(string(seed_path)*"SWG_full"*string(p)*".ply", CropRootbox.mesh(s));
+                CSV.write(string(seed_path)*"Output_parameters.csv",summary)
                 CSV.write(string(seed_path)*"Input_parameters.csv",r)
 
 end
@@ -256,11 +256,12 @@ root_switchgrass_VS16_mid_thick = (
     ),
     :BaseRoot => :T => [
         # S P F S    R
-          0 1 0  0 1 #; # P
-          0 0 1  0 0##; # F
-          0 0 0  0 0##; # S
-          0 0 0  0 0  ; # T =#
-          0 1 0 0 1
+        0 1 0 0 0 0;
+        0 0 1 0 0 0;
+        0 0 0 0 0 0;
+        0 0 0 0 0 0;
+        0 0 0 0 0 1;
+        0 1 0 0 0 0;
     ],
     :PrimaryRoot => (;
         lb = 1.0 ± 0.25,
@@ -374,8 +375,8 @@ seed_path=""
                     
                 end
                 end
-                trimesh_ply(string(seed_path)*"SWG_full.ply"*string(f), CropRootbox.mesh(s));
-                CSV.write(string(seed_path)*"Output_parameters.csv",D)
+                trimesh_ply(string(seed_path)*"SWG_full"*string(p)*.ply", CropRootbox.mesh(s));
+                CSV.write(string(seed_path)*"Output_parameters.csv",summary)
                 CSV.write(string(seed_path)*"Input_parameters.csv",r)
 
 end
