@@ -76,6 +76,8 @@ mesh(s::Rhizobox) = begin
     w = Cropbox.deunitfy(s.w', u"cm")
     h = Cropbox.deunitfy(s.h', u"cm")
     g = GeometryBasics.Rect3(Point3f(-l/2, -w/2, 0), Point3f(l, w, -h))
+    #g = GeometryBasics.Cylinder(Point3f(-l/2, -w/2, 0), Point3f(l, w, -h),0.3f0)
+
     GeometryBasics.mesh(g)
 end
 
@@ -462,7 +464,7 @@ mesh(s::RootSegment;color=true) = begin
     a = Cropbox.deunitfy(s.a', u"cm")
     (iszero(l) || iszero(a)) && return nothing
     r = a/2
-    g = GeometryBasics.Rect3(Point3f(-r, -r, 0), Point3f(a, a, l))
+    g = GeometryBasics.Cylinder(Point3f(0, 0, 0), Point3f(0, 0, l),a)
     m = GeometryBasics.mesh(g)
 
     #HACK: reconstruct a mesh with transformation applied
@@ -475,7 +477,7 @@ mesh(s::RootSegment;color=true) = begin
     t = s.name;
     n = length(GeometryBasics.coordinates(m))
 
-    m = GeometryBasics.mesh(m, color= GeometryBasics.per_face(fill(c, 12), m))
+    m = GeometryBasics.mesh(m, color= GeometryBasics.per_face(fill(c, 60), m))
     #GeometryBasics.pointmeta(m; color=fill(c, n), root_type=fill(t, n))
 end
 
